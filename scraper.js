@@ -1,6 +1,7 @@
 const { chromium } = require("playwright");
 const fs = require("fs").promises;
 const path = require("path");
+const XLSX = require("xlsx");
 
 // Configuration
 const CONFIG = {
@@ -31,6 +32,18 @@ function log(level, message, meta = {}) {
   console.log(JSON.stringify(entry));
 }
 
+// Extract headers from the table
+async function extractHeaders(page) {
+  try {
+    const headers = await page.$$eval("table thead th", (ths) =>
+      ths.map((th) => th.innerText.trim())
+    );
+    return headers.length > 0 ? headers : null;
+  } catch {
+    return null;
+  }
+}
+
 async function scrapeWithRetry(retryCount = 0) {
   let context;
   
@@ -38,13 +51,11 @@ async function scrapeWithRetry(retryCount = 0) {
     log("info", "Launching browser", { attempt: retryCount + 1 });
     
     context = await chromium.launchPersistentContext(CONFIG.sessionDir, {
-      headless: true, // Set to false only for debugging
+      headless: true,
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 
     const page = await context.newPage();
-    
-    // Set default timeout
     page.setDefaultTimeout(CONFIG.timeout);
 
     log("info", "Navigating to target URL");
@@ -60,10 +71,8 @@ async function scrapeWithRetry(retryCount = 0) {
 
     log("info", "Waiting for table data");
     
-    // Wait for specific table to be present and not empty
     await page.waitForSelector("table tbody tr", { timeout: CONFIG.timeout });
     
-    // Additional wait for dynamic data to populate
     await page.waitForFunction(() => {
       const rows = document.querySelectorAll("table tbody tr");
       return rows.length > 0 && rows[0].querySelector("td")?.innerText?.trim() !== "";
@@ -71,6 +80,10 @@ async function scrapeWithRetry(retryCount = 0) {
 
     log("info", "Extracting data");
     
+    // Try to get headers first
+    const headers = await extractHeaders(page);
+    
+    // Extract table data
     const data = await page.$$eval("table tbody tr", (rows) =>
       rows.map((row) =>
         Array.from(row.querySelectorAll("td")).map((cell) => 
@@ -83,25 +96,46 @@ async function scrapeWithRetry(retryCount = 0) {
       throw new Error("No data extracted - table may be empty");
     }
 
-    // Atomic write: write to temp file, then rename
+    // Create Excel workbook
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const filename = `data_${timestamp}.json`;
+    const filename = `data_${timestamp}.xlsx`;
     const tempPath = path.join(CONFIG.outputDir, `.tmp_${filename}`);
     const finalPath = path.join(CONFIG.outputDir, filename);
 
-    await fs.writeFile(tempPath, JSON.stringify(data, null, 2));
-    await fs.rename(tempPath, finalPath); // Atomic operation
+    // Prepare worksheet data
+    const worksheetData = headers ? [headers, ...data] : data;
+    
+    // Create workbook and worksheet
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(worksheetData);
+    
+    // Auto-adjust column widths
+    const colWidths = worksheetData[0].map((_, colIndex) => {
+      const maxLength = Math.max(
+        ...worksheetData.map(row => String(row[colIndex] || '').length)
+      );
+      return { wch: Math.min(maxLength + 2, 50) }; // Cap at 50 chars
+    });
+    ws['!cols'] = colWidths;
+
+    // Add worksheet to workbook
+    XLSX.utils.book_append_sheet(wb, ws, "Scraped Data");
+    
+    // Write to temp file first (atomic write)
+    XLSX.writeFile(wb, tempPath);
+    await fs.rename(tempPath, finalPath);
 
     log("info", "Scrape successful", { 
       rows: data.length, 
+      columns: headers?.length || data[0]?.length,
       file: filename,
-      bytes: JSON.stringify(data).length 
+      path: finalPath
     });
 
     await page.close();
     await context.close();
     
-    return { success: true, rows: data.length };
+    return { success: true, rows: data.length, file: finalPath };
 
   } catch (error) {
     log("error", "Scrape failed", { 
@@ -110,7 +144,6 @@ async function scrapeWithRetry(retryCount = 0) {
       attempt: retryCount + 1 
     });
 
-    // Capture screenshot for debugging
     if (context) {
       try {
         const pages = context.pages();
@@ -128,7 +161,6 @@ async function scrapeWithRetry(retryCount = 0) {
       }
     }
 
-    // Retry logic
     if (retryCount < CONFIG.maxRetries - 1) {
       log("info", "Retrying...", { delayMs: CONFIG.retryDelay });
       await new Promise(r => setTimeout(r, CONFIG.retryDelay));
@@ -144,6 +176,7 @@ async function scrapeWithRetry(retryCount = 0) {
   try {
     await ensureDirs();
     const result = await scrapeWithRetry();
+    log("info", "Process completed", { file: result.file });
     process.exit(result.success ? 0 : 1);
   } catch (error) {
     log("fatal", "Scrape failed permanently", { error: error.message });

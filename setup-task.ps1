@@ -12,8 +12,8 @@ New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 # Action: Run Node.js with proper working directory
 $Action = New-ScheduledTaskAction -Execute $NodePath -Argument "`"$ScriptPath`"" -WorkingDirectory $WorkingDir
 
-# Trigger: Every 30 minutes, starting now
-$Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration ([TimeSpan]::MaxValue)
+# Trigger: Every 10 minutes, starting now
+$Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 10) -RepetitionDuration ([TimeSpan]::MaxValue)
 
 # Settings: Run whether user is logged on or not, with highest privileges, restart on failure
 $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Highest
