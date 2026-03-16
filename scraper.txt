@@ -4,7 +4,7 @@ const path = require("path");
 
 // Configuration
 const CONFIG = {
-  url: "https://*************",
+  url: "***********************",
   outputDir: path.join(__dirname, "data"),
   screenshotDir: path.join(__dirname, "screenshots"),
   sessionDir: path.join(__dirname, "slb_session"),
